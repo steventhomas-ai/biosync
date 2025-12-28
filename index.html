@@ -29,6 +29,7 @@
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
+        .transition-all { transition: all 0.2s ease-in-out; }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-900">
@@ -37,7 +38,6 @@
     <script type="text/babel">
         const { useState, useEffect } = React;
 
-        // --- FIREBASE CONFIGURATION ---
         const firebaseConfig = {
             apiKey: "AIzaSyAoPzHrd3gcHDoRvp0o8menThWc_AiSt9k",
             authDomain: "biosync-34e78.firebaseapp.com",
@@ -47,7 +47,6 @@
             appId: "1:85146133000:web:4f54474b09f2c3c8cc67bd"
         };
 
-        // Initialize Firebase
         if (!firebase.apps.length) {
             firebase.initializeApp(firebaseConfig);
         }
@@ -60,10 +59,11 @@
         };
 
         const App = () => {
-            const [view, setView] = useState('dashboard');
+            const [view, setView] = useState('dashboard'); // dashboard, logger, student-detail
             const [logs, setLogs] = useState([]);
             const [loading, setLoading] = useState(false);
             const [dbStatus, setDbStatus] = useState('Connecting...');
+            const [selectedStudentId, setSelectedStudentId] = useState(null);
             
             const [students] = useState([
                 { id: 's1', name: 'Alvarez, J.' }, 
@@ -74,14 +74,14 @@
             ]);
 
             const CURRICULUM = [
-                { id: 'D1', title: 'Domain 1', units: [{ id: '1.1', title: 'Biochem' }] },
-                { id: 'D2', title: 'Domain 2', units: [{ id: '2.1', title: 'Energy' }] }
+                { id: 'D1', title: 'Domain 1', units: [{ id: '1.1', title: 'Biochem' }, { id: '1.2', title: 'Cells' }] },
+                { id: 'D2', title: 'Domain 2', units: [{ id: '2.1', title: 'Energy' }, { id: '2.2', title: 'DNA' }] },
+                { id: 'D3', title: 'Domain 3', units: [{ id: '3.1', title: 'Genetics' }] }
             ];
 
-            // 1. Auth and Data Listener
             useEffect(() => {
                 auth.signInAnonymously()
-                    .then(() => setDbStatus('Logged In (Cloud)'))
+                    .then(() => setDbStatus('Sync Active'))
                     .catch(err => setDbStatus('Auth Error: ' + err.message));
 
                 const unsubscribe = db.collection('logs')
@@ -90,12 +90,8 @@
                         snap => {
                             const data = snap.docs.map(doc => ({id: doc.id, ...doc.data()}));
                             setLogs(data);
-                            setDbStatus('Sync Active');
                         },
-                        err => {
-                            setDbStatus('Database Error: Check Rules');
-                            console.error(err);
-                        }
+                        err => setDbStatus('Database Error: ' + err.message)
                     );
                 return () => unsubscribe();
             }, []);
@@ -105,7 +101,8 @@
                 score: 3, 
                 domainId: 'D1', 
                 unitId: '1.1', 
-                type: 'Mastery Check'
+                type: 'Mastery Check',
+                originalLogId: null // Used for revisions
             });
 
             const handleLog = async (e) => {
@@ -117,91 +114,253 @@
                 const newEntry = {
                     ...form,
                     studentName: student ? student.name : 'Unknown',
-                    grade: form.score >= 3 ? 85 : 65, // Simplified logic
                     date: new Date().toISOString(),
                     displayDate: new Date().toLocaleDateString(),
                 };
 
                 try {
+                    // If this is a revision, we could optionally mark the old one as "Revised"
+                    // For now, we just add the new entry to the stream
                     await db.collection('logs').add(newEntry);
+                    
                     setView('dashboard');
-                    setForm(prev => ({...prev, studentId: ''})); 
+                    setForm({ studentId: '', score: 3, domainId: 'D1', unitId: '1.1', type: 'Mastery Check', originalLogId: null }); 
                 } catch (err) {
-                    setDbStatus('Save Failed: ' + err.message);
+                    alert('Save Failed: ' + err.message);
                 } finally {
                     setLoading(false);
                 }
             };
 
+            const deleteLog = async (id) => {
+                if (window.confirm("Delete this entry forever?")) {
+                    try {
+                        await db.collection('logs').doc(id).delete();
+                    } catch (err) {
+                        alert("Delete failed: " + err.message);
+                    }
+                }
+            };
+
+            const startRevision = (log) => {
+                setForm({
+                    studentId: log.studentId,
+                    score: 3, // Default to mastery for the revision
+                    domainId: log.domainId || 'D1',
+                    unitId: log.unitId || '1.1',
+                    type: log.type,
+                    originalLogId: log.id
+                });
+                setView('logger');
+            };
+
+            const getStudentLogs = (sid) => logs.filter(l => l.studentId === sid);
+
             return (
                 <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row pb-12">
-                    <nav className="bg-white border-b border-slate-200 p-4 md:w-64 md:h-screen flex md:flex-col justify-between">
-                        <div className="flex items-center space-x-2">
-                            <div className="bg-emerald-600 text-white p-2 rounded-lg"><Icon name="brain-circuit" /></div>
-                            <h1 className="text-xl font-bold">BioSync</h1>
+                    
+                    {/* Navigation */}
+                    <nav className="bg-white border-b border-slate-200 p-4 md:w-20 md:h-screen flex md:flex-col items-center justify-between md:justify-start md:space-y-8 sticky top-0 z-20">
+                        <div className="bg-emerald-600 text-white p-2 rounded-xl shadow-lg shadow-emerald-200">
+                            <Icon name="brain-circuit" size={28} />
                         </div>
-                        <div className="flex md:flex-col space-x-4 md:space-x-0 md:mt-8">
-                            <button onClick={() => setView('dashboard')} className="p-2"><Icon name="layout" /></button>
-                            <button onClick={() => setView('logger')} className="p-2"><Icon name="plus-circle" /></button>
+                        <div className="flex md:flex-col space-x-6 md:space-x-0 md:space-y-6">
+                            <button onClick={() => setView('dashboard')} className={`p-2 rounded-lg ${view === 'dashboard' ? 'bg-emerald-50 text-emerald-600' : 'text-slate-400'}`}>
+                                <Icon name="layout" />
+                            </button>
+                            <button onClick={() => setView('logger')} className={`p-2 rounded-lg ${view === 'logger' ? 'bg-emerald-50 text-emerald-600' : 'text-slate-400'}`}>
+                                <Icon name="plus-circle" />
+                            </button>
                         </div>
                     </nav>
 
-                    <main className="flex-1 p-6 max-w-4xl mx-auto w-full">
-                        {view === 'dashboard' ? (
-                            <div className="space-y-6">
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="bg-white p-4 rounded-xl border border-slate-200">
-                                        <div className="text-xs font-bold text-slate-400 uppercase">Total Logs</div>
-                                        <div className="text-2xl font-bold">{logs.length}</div>
+                    <main className="flex-1 p-4 md:p-8 max-w-4xl mx-auto w-full">
+                        
+                        {/* DASHBOARD */}
+                        {view === 'dashboard' && (
+                            <div className="space-y-6 animate-in fade-in">
+                                <header className="flex justify-between items-end">
+                                    <div>
+                                        <h2 className="text-2xl font-black text-slate-800 tracking-tight">EVIDENCE STREAM</h2>
+                                        <p className="text-slate-400 font-medium text-sm uppercase tracking-widest">{dbStatus}</p>
                                     </div>
-                                    <div className="bg-emerald-600 p-4 rounded-xl text-white">
-                                        <div className="text-xs font-bold uppercase opacity-80">Sync Status</div>
-                                        <div className="text-sm font-medium truncate">{dbStatus}</div>
-                                    </div>
+                                    <button onClick={() => setView('logger')} className="bg-slate-900 text-white px-4 py-2 rounded-lg font-bold text-sm shadow-lg active:scale-95 transition-all">
+                                        + LOG DATA
+                                    </button>
+                                </header>
+
+                                {/* Student Pulse Grid */}
+                                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                                    {students.map(s => {
+                                        const sLogs = getStudentLogs(s.id);
+                                        const needsRevision = sLogs.some(l => l.score < 3);
+                                        return (
+                                            <button 
+                                                key={s.id} 
+                                                onClick={() => { setSelectedStudentId(s.id); setView('student-detail'); }}
+                                                className={`p-3 rounded-xl border text-left transition-all ${needsRevision ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-200'}`}
+                                            >
+                                                <div className="text-[10px] font-bold text-slate-400 uppercase truncate">{s.name}</div>
+                                                <div className="flex items-end justify-between mt-1">
+                                                    <span className="text-xl font-black text-slate-700">{sLogs.length}</span>
+                                                    {needsRevision && <Icon name="alert-circle" size={14} className="text-amber-500 mb-1" />}
+                                                </div>
+                                            </button>
+                                        );
+                                    })}
                                 </div>
 
-                                <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                                    <div className="p-4 bg-slate-50 border-b font-bold flex justify-between">
-                                        Recent Evidence
-                                        <button onClick={() => setView('logger')} className="text-emerald-600 text-xs">+ New</button>
-                                    </div>
-                                    <div className="divide-y">
-                                        {logs.map(log => (
-                                            <div key={log.id} className="p-4 flex justify-between">
-                                                <div>
-                                                    <div className="font-bold">{log.studentName}</div>
-                                                    <div className="text-xs text-slate-500">{log.type}</div>
+                                {/* Recent Logs Table */}
+                                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                                    <div className="p-4 bg-slate-50 border-b font-bold text-slate-600 text-sm">RECENT ACTIVITY</div>
+                                    <div className="divide-y divide-slate-100">
+                                        {logs.length === 0 ? (
+                                            <div className="p-12 text-center text-slate-400 italic">No evidence found in cloud.</div>
+                                        ) : logs.map(log => (
+                                            <div key={log.id} className="p-4 flex justify-between items-center hover:bg-slate-50 transition-all group">
+                                                <div className="flex-1">
+                                                    <div className="flex items-center space-x-2">
+                                                        <span className="font-bold text-slate-800">{log.studentName}</span>
+                                                        <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded uppercase font-bold">{log.type}</span>
+                                                    </div>
+                                                    <div className="text-xs text-slate-400">{log.unitId} • {log.displayDate}</div>
                                                 </div>
-                                                <div className="font-bold text-emerald-600">{log.score}/4</div>
+                                                
+                                                <div className="flex items-center space-x-4">
+                                                    <div className={`text-lg font-black ${log.score >= 3 ? 'text-emerald-600' : 'text-amber-500'}`}>
+                                                        {log.score === 4.5 ? '4+' : log.score}
+                                                    </div>
+                                                    
+                                                    {/* Action Icons */}
+                                                    <div className="flex space-x-1">
+                                                        {log.score < 3 && (
+                                                            <button onClick={() => startRevision(log)} className="p-2 text-amber-500 hover:bg-amber-100 rounded-lg" title="Resolve Revision">
+                                                                <Icon name="refresh-cw" size={16} />
+                                                            </button>
+                                                        )}
+                                                        <button onClick={() => deleteLog(log.id)} className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all">
+                                                            <Icon name="trash-2" size={16} />
+                                                        </button>
+                                                    </div>
+                                                </div>
                                             </div>
                                         ))}
                                     </div>
                                 </div>
                             </div>
-                        ) : (
-                            <form onSubmit={handleLog} className="bg-white p-6 rounded-xl border border-slate-200 space-y-4">
-                                <h2 className="text-xl font-bold">Log Data</h2>
-                                <select required className="w-full p-3 border rounded-lg" value={form.studentId} onChange={e => setForm({...form, studentId: e.target.value})}>
-                                    <option value="">Select Student...</option>
-                                    {students.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                                </select>
-                                <div className="flex gap-2">
-                                    {[1, 2, 3, 4].map(v => (
-                                        <button key={v} type="button" onClick={() => setForm({...form, score: v})} className={`flex-1 p-4 rounded-lg font-bold ${form.score === v ? 'bg-emerald-600 text-white' : 'bg-slate-100'}`}>{v}</button>
+                        )}
+
+                        {/* STUDENT DETAIL VIEW */}
+                        {view === 'student-detail' && (
+                            <div className="space-y-6 animate-in slide-in-from-right">
+                                <button onClick={() => setView('dashboard')} className="flex items-center text-slate-400 font-bold text-sm">
+                                    <Icon name="chevron-left" size={18} /> BACK TO STREAM
+                                </button>
+                                
+                                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                                    <h2 className="text-3xl font-black text-slate-800">{students.find(s => s.id === selectedStudentId)?.name}</h2>
+                                    <div className="flex gap-4 mt-4">
+                                        <div className="bg-slate-50 p-4 rounded-xl flex-1 text-center">
+                                            <div className="text-xs font-bold text-slate-400 uppercase">Mastery Count</div>
+                                            <div className="text-2xl font-black text-emerald-600">{getStudentLogs(selectedStudentId).filter(l => l.score >= 3).length}</div>
+                                        </div>
+                                        <div className="bg-slate-50 p-4 rounded-xl flex-1 text-center">
+                                            <div className="text-xs font-bold text-slate-400 uppercase">Pending Revisions</div>
+                                            <div className="text-2xl font-black text-amber-500">{getStudentLogs(selectedStudentId).filter(l => l.score < 3).length}</div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-3">
+                                    <h3 className="font-bold text-slate-500 text-sm uppercase">Assessment History</h3>
+                                    {getStudentLogs(selectedStudentId).map(log => (
+                                        <div key={log.id} className="bg-white p-4 rounded-xl border border-slate-200 flex justify-between items-center">
+                                            <div>
+                                                <div className="font-bold text-slate-700">{log.unitId} - {log.type}</div>
+                                                <div className="text-xs text-slate-400">{log.displayDate}</div>
+                                            </div>
+                                            <div className="flex items-center space-x-3">
+                                                <span className={`font-black text-xl ${log.score >= 3 ? 'text-emerald-600' : 'text-amber-500'}`}>{log.score}</span>
+                                                <button onClick={() => deleteLog(log.id)} className="text-slate-200 hover:text-red-500"><Icon name="trash-2" size={14}/></button>
+                                            </div>
+                                        </div>
                                     ))}
                                 </div>
-                                <button className="w-full py-4 bg-slate-900 text-white rounded-lg font-bold" disabled={loading}>
-                                    {loading ? 'Saving...' : 'Submit Log'}
-                                </button>
-                                <button type="button" onClick={() => setView('dashboard')} className="w-full py-2 text-slate-400">Cancel</button>
-                            </form>
+                            </div>
+                        )}
+
+                        {/* LOGGER VIEW */}
+                        {view === 'logger' && (
+                            <div className="max-w-md mx-auto animate-in zoom-in-95 duration-200">
+                                <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl overflow-hidden">
+                                    <div className="p-6 bg-slate-900 text-white flex justify-between items-center">
+                                        <h2 className="text-xl font-bold">
+                                            {form.originalLogId ? 'RESOLVE REVISION' : 'NEW EVIDENCE'}
+                                        </h2>
+                                        <button onClick={() => setView('dashboard')} className="opacity-60 hover:opacity-100"><Icon name="x" /></button>
+                                    </div>
+
+                                    <form onSubmit={handleLog} className="p-6 space-y-6">
+                                        {/* Student Selection */}
+                                        <div>
+                                            <label className="block text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">Student</label>
+                                            <select 
+                                                required 
+                                                className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl font-bold text-slate-700 outline-none focus:border-emerald-500 transition-all" 
+                                                value={form.studentId} 
+                                                onChange={e => setForm({...form, studentId: e.target.value})}
+                                            >
+                                                <option value="">Choose Student...</option>
+                                                {students.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                            </select>
+                                        </div>
+
+                                        {/* Unit Selection */}
+                                        <div className="grid grid-cols-2 gap-3">
+                                            <div>
+                                                <label className="block text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">Domain</label>
+                                                <select className="w-full p-3 bg-slate-50 border rounded-xl text-sm font-bold" value={form.domainId} onChange={e => setForm({...form, domainId: e.target.value})}>
+                                                    {CURRICULUM.map(d => <option key={d.id} value={d.id}>{d.id}</option>)}
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="block text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">Assessment</label>
+                                                <select className="w-full p-3 bg-slate-50 border rounded-xl text-sm font-bold" value={form.type} onChange={e => setForm({...form, type: e.target.value})}>
+                                                    {['Mastery Check', 'Lab', 'PA', 'Revision'].map(t => <option key={t} value={t}>{t}</option>)}
+                                                </select>
+                                            </div>
+                                        </div>
+
+                                        {/* Score Selection */}
+                                        <div>
+                                            <label className="block text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest text-center">Performance Level</label>
+                                            <div className="grid grid-cols-3 gap-3">
+                                                {[1, 2, 3, 4, 4.5].map(v => (
+                                                    <button 
+                                                        key={v} 
+                                                        type="button" 
+                                                        onClick={() => setForm({...form, score: v})} 
+                                                        className={`p-4 rounded-2xl font-black text-xl transition-all ${form.score === v ? 'bg-emerald-600 text-white shadow-lg scale-105 shadow-emerald-200' : 'bg-slate-50 text-slate-400 border border-slate-100'}`}
+                                                    >
+                                                        {v === 4.5 ? '4+' : v}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        <button className="w-full py-5 bg-slate-900 text-white rounded-2xl font-black shadow-xl active:scale-95 transition-all flex items-center justify-center space-x-2" disabled={loading}>
+                                            {loading ? <Icon name="loader" className="animate-spin" /> : <span>SAVE TO CLOUD</span>}
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
                         )}
                     </main>
 
-                    {/* DB STATUS BAR */}
-                    <div className="fixed bottom-0 left-0 right-0 bg-slate-900 text-[10px] text-white px-4 py-1 flex justify-between uppercase tracking-widest opacity-80">
-                        <span>Database: {dbStatus}</span>
-                        <span>v1.0.2</span>
+                    {/* Footer Status */}
+                    <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 text-[10px] text-slate-400 px-4 py-1 flex justify-between uppercase font-bold tracking-tighter">
+                        <span className="flex items-center"><div className="w-2 h-2 rounded-full bg-emerald-500 mr-2 animate-pulse"></div> {dbStatus}</span>
+                        <span>v1.1.0 • BioSync Dashboard</span>
                     </div>
                 </div>
             );
