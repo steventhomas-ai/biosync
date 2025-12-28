@@ -29,16 +29,13 @@
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
-        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-900">
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useMemo } = React;
+        const { useState, useEffect } = React;
 
         // --- FIREBASE CONFIGURATION ---
         const firebaseConfig = {
@@ -51,22 +48,11 @@
         };
 
         // Initialize Firebase
-        if (firebaseConfig.apiKey) {
+        if (!firebase.apps.length) {
             firebase.initializeApp(firebaseConfig);
         }
-        const db = firebaseConfig.apiKey ? firebase.firestore() : null;
-        const auth = firebaseConfig.apiKey ? firebase.auth() : null;
-
-        // --- APP LOGIC ---
-
-        const convertScore = (score) => {
-            if (score >= 4.5) return 100;
-            if (score === 4) return 95;
-            if (score === 3) return 85;
-            if (score === 2) return 75;
-            if (score === 1) return 65;
-            return 50;
-        };
+        const db = firebase.firestore();
+        const auth = firebase.auth();
 
         const Icon = ({ name, size = 20, className = "" }) => {
             useEffect(() => { lucide.createIcons(); }, [name]);
@@ -77,8 +63,8 @@
             const [view, setView] = useState('dashboard');
             const [logs, setLogs] = useState([]);
             const [loading, setLoading] = useState(false);
+            const [dbStatus, setDbStatus] = useState('Connecting...');
             
-            // Initial Mock Data (You can change these to your actual student names)
             const [students] = useState([
                 { id: 's1', name: 'Alvarez, J.' }, 
                 { id: 's2', name: 'Bennett, T.' }, 
@@ -88,53 +74,30 @@
             ]);
 
             const CURRICULUM = [
-                {
-                    id: 'D1', title: 'Domain 1: The Molecular Machine', 
-                    units: [
-                        { id: '1.1', title: 'Biochemistry of Life' },
-                        { id: '1.2', title: 'Cell Structure & Function' },
-                        { id: '1.3', title: 'Membrane Transport' }
-                    ]
-                },
-                {
-                    id: 'D2', title: 'Domain 2: Energy & Info', 
-                    units: [
-                        { id: '2.1', title: 'Bioenergetics' },
-                        { id: '2.2', title: 'DNA Structure' },
-                        { id: '2.3', title: 'The Cell Cycle' }
-                    ]
-                },
-                {
-                    id: 'D3', title: 'Domain 3: Continuity', 
-                    units: [
-                        { id: '3.1', title: 'Meiosis' },
-                        { id: '3.2', title: 'Mendelian Genetics' },
-                        { id: '3.3', title: 'Pedigrees' }
-                    ]
-                },
-                {
-                    id: 'D4', title: 'Domain 4: Systems', 
-                    units: [
-                        { id: '4.1', title: 'Ecology Basics' },
-                        { id: '4.2', title: 'Population Dynamics' }
-                    ]
-                }
+                { id: 'D1', title: 'Domain 1', units: [{ id: '1.1', title: 'Biochem' }] },
+                { id: 'D2', title: 'Domain 2', units: [{ id: '2.1', title: 'Energy' }] }
             ];
 
+            // 1. Auth and Data Listener
             useEffect(() => {
-                if (auth) {
-                    auth.signInAnonymously().catch(console.error);
-                    auth.onAuthStateChanged(user => {
-                        if (user && db) {
-                            db.collection('logs').orderBy('date', 'desc').onSnapshot(snap => {
-                                const data = snap.docs.map(doc => ({id: doc.id, ...doc.data()}));
-                                setLogs(data);
-                            }, error => {
-                                console.error("Firestore Error:", error);
-                            });
+                auth.signInAnonymously()
+                    .then(() => setDbStatus('Logged In (Cloud)'))
+                    .catch(err => setDbStatus('Auth Error: ' + err.message));
+
+                const unsubscribe = db.collection('logs')
+                    .orderBy('date', 'desc')
+                    .onSnapshot(
+                        snap => {
+                            const data = snap.docs.map(doc => ({id: doc.id, ...doc.data()}));
+                            setLogs(data);
+                            setDbStatus('Sync Active');
+                        },
+                        err => {
+                            setDbStatus('Database Error: Check Rules');
+                            console.error(err);
                         }
-                    });
-                }
+                    );
+                return () => unsubscribe();
             }, []);
 
             const [form, setForm] = useState({ 
@@ -142,238 +105,104 @@
                 score: 3, 
                 domainId: 'D1', 
                 unitId: '1.1', 
-                type: 'Mastery Check', 
-                notes: '' 
+                type: 'Mastery Check'
             });
-
-            const currentDomain = CURRICULUM.find(d => d.id === form.domainId) || CURRICULUM[0];
 
             const handleLog = async (e) => {
                 e.preventDefault();
+                if (!form.studentId) return;
                 setLoading(true);
-                const student = students.find(s => s.id === form.studentId);
                 
+                const student = students.find(s => s.id === form.studentId);
                 const newEntry = {
                     ...form,
                     studentName: student ? student.name : 'Unknown',
-                    grade: convertScore(form.score),
+                    grade: form.score >= 3 ? 85 : 65, // Simplified logic
                     date: new Date().toISOString(),
                     displayDate: new Date().toLocaleDateString(),
-                    revisionStatus: form.score < 3 ? 'Pending' : 'None'
                 };
 
                 try {
-                    if (db && auth && auth.currentUser) {
-                        await db.collection('logs').add(newEntry);
-                    } else {
-                        setLogs([ {id: Date.now().toString(), ...newEntry}, ...logs ]);
-                    }
+                    await db.collection('logs').add(newEntry);
                     setView('dashboard');
-                    setForm(prev => ({...prev, studentId: '', score: 3})); 
+                    setForm(prev => ({...prev, studentId: ''})); 
                 } catch (err) {
-                    console.error("Save failed:", err);
+                    setDbStatus('Save Failed: ' + err.message);
                 } finally {
                     setLoading(false);
                 }
             };
 
             return (
-                <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row">
-                    <nav className="bg-white border-b md:border-b-0 md:border-r border-slate-200 p-4 md:w-64 md:h-screen sticky top-0 z-10 flex md:flex-col items-center md:items-stretch justify-between">
-                        <div className="flex items-center space-x-2 md:mb-8">
-                            <div className="bg-emerald-600 text-white p-2 rounded-lg">
-                                <Icon name="brain-circuit" size={24} />
-                            </div>
-                            <h1 className="text-xl font-bold text-slate-800">BioSync</h1>
+                <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row pb-12">
+                    <nav className="bg-white border-b border-slate-200 p-4 md:w-64 md:h-screen flex md:flex-col justify-between">
+                        <div className="flex items-center space-x-2">
+                            <div className="bg-emerald-600 text-white p-2 rounded-lg"><Icon name="brain-circuit" /></div>
+                            <h1 className="text-xl font-bold">BioSync</h1>
                         </div>
-                        
-                        <div className="hidden md:flex flex-col space-y-2">
-                            <button onClick={() => setView('dashboard')} className={`flex items-center space-x-3 px-4 py-3 rounded-lg ${view === 'dashboard' ? 'bg-emerald-50 text-emerald-800 font-bold' : 'text-slate-600 hover:bg-slate-50'}`}>
-                                <Icon name="layout" /> <span>Dashboard</span>
-                            </button>
-                            <button onClick={() => setView('logger')} className={`flex items-center space-x-3 px-4 py-3 rounded-lg ${view === 'logger' ? 'bg-emerald-50 text-emerald-800 font-bold' : 'text-slate-600 hover:bg-slate-50'}`}>
-                                <Icon name="plus-circle" /> <span>Log Evidence</span>
-                            </button>
-                            <button onClick={() => setView('revisions')} className={`flex items-center space-x-3 px-4 py-3 rounded-lg ${view === 'revisions' ? 'bg-emerald-50 text-emerald-800 font-bold' : 'text-slate-600 hover:bg-slate-50'}`}>
-                                <Icon name="refresh-cw" /> <span>Revisions</span>
-                            </button>
-                        </div>
-
-                        <div className="md:hidden flex space-x-4">
-                            <button onClick={() => setView('dashboard')} className={view === 'dashboard' ? 'text-emerald-600' : 'text-slate-400'}>
-                                <Icon name="layout" />
-                            </button>
-                            <button onClick={() => setView('logger')} className={view === 'logger' ? 'text-emerald-600' : 'text-slate-400'}>
-                                <Icon name="plus-circle" />
-                            </button>
-                            <button onClick={() => setView('revisions')} className={view === 'revisions' ? 'text-emerald-600' : 'text-slate-400'}>
-                                <Icon name="refresh-cw" />
-                            </button>
+                        <div className="flex md:flex-col space-x-4 md:space-x-0 md:mt-8">
+                            <button onClick={() => setView('dashboard')} className="p-2"><Icon name="layout" /></button>
+                            <button onClick={() => setView('logger')} className="p-2"><Icon name="plus-circle" /></button>
                         </div>
                     </nav>
 
-                    <main className="flex-1 p-4 md:p-8 max-w-4xl mx-auto w-full">
-                        {view === 'dashboard' && (
+                    <main className="flex-1 p-6 max-w-4xl mx-auto w-full">
+                        {view === 'dashboard' ? (
                             <div className="space-y-6">
-                                <header className="mb-6">
-                                    <h2 className="text-2xl font-bold text-slate-800">Course Pulse</h2>
-                                    <p className="text-slate-500">Living Systems • Class Monitor</p>
-                                </header>
-
-                                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                                    <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                                        <div className="text-slate-400 text-xs font-bold uppercase mb-1">Logs</div>
-                                        <div className="text-3xl font-bold text-slate-800">{logs.length}</div>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div className="bg-white p-4 rounded-xl border border-slate-200">
+                                        <div className="text-xs font-bold text-slate-400 uppercase">Total Logs</div>
+                                        <div className="text-2xl font-bold">{logs.length}</div>
                                     </div>
-                                    <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                                        <div className="text-slate-400 text-xs font-bold uppercase mb-1">Revisions</div>
-                                        <div className="text-3xl font-bold text-amber-500">{logs.filter(l => l.score < 3).length}</div>
-                                    </div>
-                                    <div className="col-span-2 md:col-span-1 bg-emerald-50 p-4 rounded-xl border border-emerald-100">
-                                        <div className="text-emerald-800 text-xs font-bold uppercase mb-1">Mastery</div>
-                                        <div className="text-3xl font-bold text-emerald-700">
-                                             {logs.length ? Math.round((logs.filter(l => l.score >= 3).length / logs.length) * 100) : 0}%
-                                        </div>
+                                    <div className="bg-emerald-600 p-4 rounded-xl text-white">
+                                        <div className="text-xs font-bold uppercase opacity-80">Sync Status</div>
+                                        <div className="text-sm font-medium truncate">{dbStatus}</div>
                                     </div>
                                 </div>
 
                                 <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                                    <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                                        <h3 className="font-bold text-slate-700">Recent Evidence</h3>
-                                        <button onClick={() => setView('logger')} className="text-xs bg-emerald-600 text-white px-3 py-1.5 rounded-full font-bold">New Log</button>
+                                    <div className="p-4 bg-slate-50 border-b font-bold flex justify-between">
+                                        Recent Evidence
+                                        <button onClick={() => setView('logger')} className="text-emerald-600 text-xs">+ New</button>
                                     </div>
-                                    <div className="divide-y divide-slate-100">
-                                        {logs.length === 0 ? (
-                                            <div className="p-8 text-center text-slate-400">No evidence logged yet. Check Firestore rules if using DB.</div>
-                                        ) : logs.slice(0, 10).map(log => (
-                                            <div key={log.id} className="p-4 flex justify-between items-center">
+                                    <div className="divide-y">
+                                        {logs.map(log => (
+                                            <div key={log.id} className="p-4 flex justify-between">
                                                 <div>
-                                                    <div className="font-bold text-slate-800">{log.studentName}</div>
-                                                    <div className="text-xs text-slate-500">{log.type} • {log.displayDate}</div>
+                                                    <div className="font-bold">{log.studentName}</div>
+                                                    <div className="text-xs text-slate-500">{log.type}</div>
                                                 </div>
-                                                <div className="text-right">
-                                                    <div className={`text-sm font-bold px-2 py-0.5 rounded ${log.score >= 3 ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}`}>
-                                                        {log.score}/4
-                                                    </div>
-                                                    <div className="text-xs text-slate-400 mt-0.5">{log.grade}%</div>
-                                                </div>
+                                                <div className="font-bold text-emerald-600">{log.score}/4</div>
                                             </div>
                                         ))}
                                     </div>
                                 </div>
                             </div>
-                        )}
-
-                        {view === 'logger' && (
-                            <div className="animate-in slide-in-from-bottom-4 duration-500">
-                                <button onClick={() => setView('dashboard')} className="mb-4 text-slate-400 hover:text-slate-600 flex items-center text-sm">
-                                    <Icon name="arrow-left" size={16} className="mr-1" /> Back
+                        ) : (
+                            <form onSubmit={handleLog} className="bg-white p-6 rounded-xl border border-slate-200 space-y-4">
+                                <h2 className="text-xl font-bold">Log Data</h2>
+                                <select required className="w-full p-3 border rounded-lg" value={form.studentId} onChange={e => setForm({...form, studentId: e.target.value})}>
+                                    <option value="">Select Student...</option>
+                                    {students.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                </select>
+                                <div className="flex gap-2">
+                                    {[1, 2, 3, 4].map(v => (
+                                        <button key={v} type="button" onClick={() => setForm({...form, score: v})} className={`flex-1 p-4 rounded-lg font-bold ${form.score === v ? 'bg-emerald-600 text-white' : 'bg-slate-100'}`}>{v}</button>
+                                    ))}
+                                </div>
+                                <button className="w-full py-4 bg-slate-900 text-white rounded-lg font-bold" disabled={loading}>
+                                    {loading ? 'Saving...' : 'Submit Log'}
                                 </button>
-                                <div className="bg-white rounded-xl border border-slate-200 shadow-lg overflow-hidden">
-                                    <div className="p-6 border-b border-slate-100">
-                                        <h2 className="text-xl font-bold text-slate-800">Log Evidence</h2>
-                                    </div>
-                                    <form onSubmit={handleLog} className="p-6 space-y-6">
-                                        <div className="grid grid-cols-2 gap-4">
-                                            <div>
-                                                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Domain</label>
-                                                <select 
-                                                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                                                    value={form.domainId}
-                                                    onChange={e => setForm({...form, domainId: e.target.value, unitId: CURRICULUM.find(d => d.id === e.target.value).units[0].id})}
-                                                >
-                                                    {CURRICULUM.map(d => <option key={d.id} value={d.id}>{d.id}</option>)}
-                                                </select>
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Unit</label>
-                                                <select 
-                                                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                                                    value={form.unitId}
-                                                    onChange={e => setForm({...form, unitId: e.target.value})}
-                                                >
-                                                    {currentDomain.units.map(u => <option key={u.id} value={u.id}>{u.id} {u.title}</option>)}
-                                                </select>
-                                            </div>
-                                        </div>
-
-                                        <div className="space-y-4">
-                                            <div>
-                                                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Student</label>
-                                                <select required className="w-full p-3 bg-slate-50 border-2 border-slate-200 rounded-xl font-medium focus:border-emerald-500 outline-none" value={form.studentId} onChange={e => setForm({...form, studentId: e.target.value})}>
-                                                    <option value="">Select Student...</option>
-                                                    {students.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                                                </select>
-                                            </div>
-                                            <div>
-                                                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Type</label>
-                                                <div className="flex bg-slate-100 p-1 rounded-lg">
-                                                    {['Mastery Check', 'Lab', 'PA'].map(type => (
-                                                        <button 
-                                                            key={type}
-                                                            type="button"
-                                                            onClick={() => setForm({...form, type})}
-                                                            className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${form.type === type ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500'}`}
-                                                        >
-                                                            {type}
-                                                        </button>
-                                                    ))}
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        <div className="bg-emerald-50/50 p-4 rounded-xl border border-emerald-100">
-                                            <div className="flex justify-between items-end mb-3">
-                                                <label className="text-xs font-bold text-emerald-800 uppercase">CBL Score</label>
-                                                <span className="text-xl font-bold text-emerald-700">{convertScore(form.score)}%</span>
-                                            </div>
-                                            <div className="flex justify-between gap-2">
-                                                {[0, 1, 2, 3, 4, 4.5].map(v => (
-                                                    <button 
-                                                        key={v} 
-                                                        type="button" 
-                                                        onClick={() => setForm({...form, score: v})} 
-                                                        className={`flex-1 aspect-square md:aspect-auto md:h-12 rounded-lg font-bold text-lg transition-all ${form.score === v ? 'bg-emerald-600 text-white shadow-lg scale-105' : 'bg-white border border-emerald-200 text-emerald-600'}`}
-                                                    >
-                                                        {v === 4.5 ? '4+' : v}
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        </div>
-
-                                        <button disabled={loading} className="w-full py-4 bg-slate-900 text-white rounded-xl font-bold shadow-xl hover:bg-slate-800 active:scale-95 transition-all flex items-center justify-center">
-                                            {loading ? <Icon name="loader-2" className="animate-spin" /> : 'Log Evidence'}
-                                        </button>
-                                    </form>
-                                </div>
-                            </div>
-                        )}
-
-                        {view === 'revisions' && (
-                            <div className="space-y-4">
-                                <h2 className="text-xl font-bold text-slate-800">Revision Queue</h2>
-                                <div className="space-y-3">
-                                    {logs.filter(l => l.score < 3).length === 0 ? (
-                                        <div className="text-center py-12 bg-white rounded-xl border border-dashed border-slate-300 text-slate-400">
-                                            No mandatory revisions pending.
-                                        </div>
-                                    ) : (
-                                        logs.filter(l => l.score < 3).map(log => (
-                                            <div key={log.id} className="bg-white p-4 rounded-xl border-l-4 border-l-red-500 shadow-sm flex justify-between items-center">
-                                                <div>
-                                                    <div className="font-bold text-slate-800">{log.studentName}</div>
-                                                    <div className="text-xs text-slate-500">{log.type} • {log.displayDate}</div>
-                                                </div>
-                                                <button className="text-xs bg-slate-100 text-slate-600 px-3 py-2 rounded-lg font-bold hover:bg-emerald-100 hover:text-emerald-700">
-                                                    Resolve
-                                                </button>
-                                            </div>
-                                        ))
-                                    )}
-                                </div>
-                            </div>
+                                <button type="button" onClick={() => setView('dashboard')} className="w-full py-2 text-slate-400">Cancel</button>
+                            </form>
                         )}
                     </main>
+
+                    {/* DB STATUS BAR */}
+                    <div className="fixed bottom-0 left-0 right-0 bg-slate-900 text-[10px] text-white px-4 py-1 flex justify-between uppercase tracking-widest opacity-80">
+                        <span>Database: {dbStatus}</span>
+                        <span>v1.0.2</span>
+                    </div>
                 </div>
             );
         };
